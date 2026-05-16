@@ -1,0 +1,8 @@
+{
+  "deepSeekApiKey": "your-api-key-here",
+  "deepSeekBaseUrl": "https://api.siliconflow.cn/v1",
+  "deepSeekModel": "deepseek-ai/DeepSeek-OCR",
+  "useDeepSeekOCR": true,
+  "enableTableRecognition": true,
+  "enableImageDescription": false
+}

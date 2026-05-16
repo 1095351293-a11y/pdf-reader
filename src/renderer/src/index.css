@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply h-full;
+  }
+  body {
+    @apply h-full bg-dark-900 text-dark-100 antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+  #root {
+    @apply h-full;
+  }
+  /* 自定义滚动条 - 深色主题 */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #3a3a4a;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #525264;
+  }
+}
+
+/* ===== PDF 文本层样式 ===== */
+/* 基础样式由 pdfjs-dist/web/pdf_viewer.css 提供，此处仅覆盖自定义部分 */
+.textLayer {
+  z-index: 2;
+}
+.textLayer ::selection {
+  background: rgba(74, 144, 217, 0.3);
+}

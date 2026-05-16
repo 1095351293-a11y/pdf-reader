@@ -1,0 +1,17 @@
+node_modules/
+dist/
+out/
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db
+config.json
+
+# Build artifacts
+*.tsbuildinfo
+
+# Editor
+.trae/
+.idea/
+.vscode/
