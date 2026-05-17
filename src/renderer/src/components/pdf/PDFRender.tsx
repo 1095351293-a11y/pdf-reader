@@ -37,6 +37,7 @@ export interface ContextMenuSelection {
 }
 
 // ========== PDF.js Worker 单例 ==========
+let pendingDestroyPromise: Promise<void> | null = null
 let workerInstance: Worker | null = null
 function getPdfWorker(): Worker {
   if (workerInstance) return workerInstance
@@ -472,7 +473,7 @@ const bitmapLRURef = useRef<number[]>([]) // 最近使用队列（末尾最新�
       textLayerLRURef.current = []
 
       if (pdfDocRef.current) {
-        try { pdfDocRef.current.destroy() } catch {}
+        pendingDestroyPromise = pdfDocRef.current.destroy().catch(() => {})
         pdfDocRef.current = null
       }
     }
@@ -483,6 +484,12 @@ const bitmapLRURef = useRef<number[]>([]) // 最近使用队列（末尾最新�
         setPdfDoc(null)
         setVisibleRange({ start: 0, end: -1 })
         cleanupDoc()
+
+        // 等待前一个文档完全销毁后再加载新文档，避免 Worker 状态冲突
+        if (pendingDestroyPromise) {
+          await pendingDestroyPromise
+          pendingDestroyPromise = null
+        }
 
         let data: ArrayBuffer | Uint8Array
         if (window.api?.readFileBuffer) {
