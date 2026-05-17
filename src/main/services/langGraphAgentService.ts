@@ -77,7 +77,6 @@ function createTools(pdfId: string, config: AgentConfig) {
       const allChunks = db.prepare(
         `SELECT text FROM pdf_chunks WHERE pdf_id = ? ORDER BY chunk_no LIMIT 10`
       ).all(pdfId) as any[]
-      db.close()
       return allChunks.map((c: any) => c.text).join('\n\n').substring(0, 4000)
     },
     {
@@ -93,7 +92,6 @@ function createTools(pdfId: string, config: AgentConfig) {
       const rows = db.prepare(
         `SELECT text FROM pdf_chunks WHERE pdf_id = ? AND page_no = ? ORDER BY chunk_no`
       ).all(pdfId, pageNumber) as any[]
-      db.close()
       if (!rows || rows.length === 0) return `Page ${pageNumber} is empty or not found.`
       return rows.map((c: any) => c.text).join('\n').substring(0, 3000)
     },
@@ -170,7 +168,6 @@ export async function runReActAgentWithHistoryLangGraph(
     const pdfInfo = db.prepare(
       'SELECT DISTINCT file_path FROM pdf_chunks WHERE pdf_id = ? LIMIT 1'
     ).get(pdfId) as { file_path: string } | undefined
-    db.close()
 
     const pdfFileName = pdfInfo?.file_path ? path.basename(pdfInfo.file_path) : '当前文档'
     const tools = createTools(pdfId, config)
