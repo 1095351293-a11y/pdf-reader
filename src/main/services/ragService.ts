@@ -5,7 +5,7 @@ import * as fs from 'fs'
 import { LayoutElement } from './layoutService'
 import { advancedRAGSearch } from './advancedRAGService'
 import { createSemanticChunksFromElements, estimateTokens } from './parentChildChunkService'
-import { runReActAgentWithHistory } from './reactAgentService'
+import { runReActAgentWithHistoryLangGraph } from './langGraphAgentService'
 
 // ========== 路径工具函数 ==========
 
@@ -684,7 +684,7 @@ export function registerRAGService(): void {
         console.log(`[ReAct Agent] 包含 ${images.length} 张图片`)
       }
       
-      const result = await runReActAgentWithHistory(query, pdfId, config, history, images)
+      const result = await runReActAgentWithHistoryLangGraph(query, pdfId, config, history)
       
       if (result.success) {
         console.log('[ReAct Agent] 执行成功')
