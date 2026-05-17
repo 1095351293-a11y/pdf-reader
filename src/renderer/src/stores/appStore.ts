@@ -36,6 +36,7 @@ export interface Annotation {
   rects: { x: number; y: number; width: number; height: number }[]
   note: string // 批注文字
   timestamp: number
+  sourcePath?: string // 所属文档路径，用于多文档隔离
 }
 
 interface AppState {

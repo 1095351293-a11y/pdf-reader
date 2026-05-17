@@ -5,7 +5,7 @@ import { getDatabase } from '../db'
 import { advancedRAGSearch } from './advancedRAGService'
 import path from 'path'
 import { StateGraph, MessagesAnnotation } from '@langchain/langgraph'
-import { ToolNode } from '@langchain/langgraph/prebuilt/index.js'
+import { ToolNode } from '@langchain/langgraph/prebuilt'
 import axios from 'axios'
 
 export interface AgentConfig {
