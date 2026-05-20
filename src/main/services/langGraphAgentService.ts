@@ -75,9 +75,9 @@ function createTools(pdfId: string, config: AgentConfig) {
     async () => {
       const db = getDatabase()
       const allChunks = db.prepare(
-        `SELECT text FROM pdf_chunks WHERE pdf_id = ? ORDER BY chunk_no LIMIT 10`
+        `SELECT content FROM pdf_chunks WHERE pdf_id = ? ORDER BY chunk_index LIMIT 10`
       ).all(pdfId) as any[]
-      return allChunks.map((c: any) => c.text).join('\n\n').substring(0, 4000)
+      return allChunks.map((c: any) => c.content).join('\n\n').substring(0, 4000)
     },
     {
       name: 'summarize_document',
@@ -90,10 +90,10 @@ function createTools(pdfId: string, config: AgentConfig) {
     async ({ pageNumber }) => {
       const db = getDatabase()
       const rows = db.prepare(
-        `SELECT text FROM pdf_chunks WHERE pdf_id = ? AND page_no = ? ORDER BY chunk_no`
+        `SELECT content FROM pdf_chunks WHERE pdf_id = ? AND page_number = ? ORDER BY chunk_index`
       ).all(pdfId, pageNumber) as any[]
       if (!rows || rows.length === 0) return `Page ${pageNumber} is empty or not found.`
-      return rows.map((c: any) => c.text).join('\n').substring(0, 3000)
+      return rows.map((c: any) => c.content).join('\n').substring(0, 3000)
     },
     {
       name: 'get_page',
