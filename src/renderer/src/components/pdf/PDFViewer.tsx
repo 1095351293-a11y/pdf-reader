@@ -162,6 +162,7 @@ const PDFRenderWithStore = forwardRef<PDFRenderHandle, {
       rects,
       note: '',
       timestamp: Date.now(),
+      sourcePath: props.filePath, // 绑定到当前文档，切换tab时隔离
     })
     setPendingAnnotation({
       id,
@@ -292,8 +293,10 @@ const PDFRenderWithStore = forwardRef<PDFRenderHandle, {
     setNoteText('')
   }
 
-  // 当前页面的批注（用于显示侧边批注标记）
-  const currentPageAnnotations = annotations.filter(() => true) // 所有页的批注都传给 PDFRender
+  // 当前文档的批注（只显示属于当前文档的，实现多文档隔离）
+  const currentPageAnnotations = annotations.filter(
+    (ann) => !ann.sourcePath || ann.sourcePath === props.filePath
+  )
 
   return (
     <>
@@ -581,27 +584,6 @@ export default function PDFViewer({ sidePanel, onCloseSidePanel, pdfSidePanelWid
     }
   }, [activeTab?.id, activeTab?.filePath])
 
-  const handlePageCount = useCallback(
-    (count: number) => {
-      if (activeTabId) updateTab(activeTabId, { totalPages: count })
-    },
-    [activeTabId, updateTab]
-  )
-
-  const handlePageChange = useCallback(
-    (page: number) => {
-      if (activeTabId) updateTab(activeTabId, { pageNumber: page })
-    },
-    [activeTabId, updateTab]
-  )
-
-  const handleScaleChange = useCallback(
-    (newScale: number) => {
-      if (activeTabId) updateTab(activeTabId, { scale: newScale })
-    },
-    [activeTabId, updateTab]
-  )
-
   const goToPage = useCallback(
     (delta: number) => {
       if (!activeTab) return
@@ -613,21 +595,20 @@ export default function PDFViewer({ sidePanel, onCloseSidePanel, pdfSidePanelWid
     [activeTab, updateTab]
   )
 
-  // 判断是否显示拖放界面（没有activeTab或没有filePath）
-  const showDropZone = !activeTab || !activeTab.filePath
+  // 没有 tab 时显示拖放界面
+  const showDropZone = tabs.length === 0
 
-  // 监听主进程发送的拖放文件路径（用于PDFViewer空状态）
+  // 监听主进程发送的拖放文件路径
   useEffect(() => {
     const removeListener = window.api?.on?.('drag:filesDropped', (paths: string[]) => {
-      // 只在显示拖放界面时才处理
       const store = useAppStore.getState()
-      if ((!store.activeTabId || !store.tabs.find(t => t.id === store.activeTabId)?.filePath) && paths.length > 0) {
+      if (paths.length > 0) {
         const { addTab } = store
         const firstPath = paths[0]
         const name = firstPath.split(/[\\/]/).pop() || '未命名.pdf'
         const newId = `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-        
-        // 添加到资料库（通过fileStore）
+
+        // 添加到资料库
         useFileStore.getState().addNode({
           id: newId,
           name,
@@ -664,7 +645,6 @@ export default function PDFViewer({ sidePanel, onCloseSidePanel, pdfSidePanelWid
       e.preventDefault()
       setIsDragOver(false)
 
-      // 获取拖放的文件路径
       const files = Array.from(e.dataTransfer.files)
       const paths: string[] = []
 
@@ -677,14 +657,13 @@ export default function PDFViewer({ sidePanel, onCloseSidePanel, pdfSidePanelWid
         }
       })
 
-      // 通过主进程处理拖放
       if (paths.length > 0) {
         window.api?.sendDragFiles(paths)
       }
     }
 
     return (
-      <div 
+      <div
         className={`flex-1 flex items-center justify-center transition-colors ${isDragOver ? 'bg-accent/5' : ''}`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -707,7 +686,7 @@ export default function PDFViewer({ sidePanel, onCloseSidePanel, pdfSidePanelWid
 
   return (
     <div className="flex-1 flex min-w-0 min-h-0 bg-dark-900 relative">
-      {/* 左侧面板：缩略图 / 目录（仅在有面板时渲染） */}
+      {/* 左侧面板：缩略图 / 目录 */}
       {sidePanel && (
         <>
           <PDFSidePanel activePanel={sidePanel} onClose={onCloseSidePanel} width={pdfSidePanelWidth} />
@@ -718,62 +697,82 @@ export default function PDFViewer({ sidePanel, onCloseSidePanel, pdfSidePanelWid
       {/* 主渲染区 */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
         <div className="flex-1 min-h-0 relative">
-          {activeTab.filePath ? (
-            <PDFRenderWithStore
-              ref={pdfRenderRef as React.LegacyRef<PDFRenderHandle> | undefined}
-              filePath={activeTab.filePath}
-              pageNumber={activeTab.pageNumber || 1}
-              scale={activeTab.scale || 1.0}
-              onPageCount={handlePageCount}
-              onPageChange={handlePageChange}
-              onScaleChange={handleScaleChange}
-            />
-          ) : (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="bg-white shadow-2xl rounded-sm" style={{ width: '595px', height: '842px' }}>
-                <div className="w-full h-full flex items-center justify-center text-gray-400">
-                  <div className="text-center">
-                    <div className="text-4xl mb-2">📄</div>
-                    <div className="text-sm">{activeTab.title}</div>
-                    <div className="text-xs mt-1 text-gray-300">PDF 渲染区域</div>
-                  </div>
+          {/* 多 Tab 层叠容器：所有 tab 独立渲染，仅活跃 tab 可见，canvas DOM 不销毁 */}
+          <div className="relative w-full h-full">
+            {tabs.map((tab) => {
+              const isActive = tab.id === activeTabId
+              return (
+                <div
+                  key={tab.id}
+                  className="absolute inset-0 overflow-hidden"
+                  style={{
+                    visibility: isActive ? 'visible' : 'hidden',
+                    zIndex: isActive ? 1 : 0,
+                    pointerEvents: isActive ? 'auto' : 'none',
+                  }}
+                >
+                  {tab.filePath ? (
+                    <PDFRenderWithStore
+                      ref={isActive ? (pdfRenderRef as React.LegacyRef<PDFRenderHandle> | undefined) : undefined}
+                      filePath={tab.filePath}
+                      pageNumber={tab.pageNumber || 1}
+                      scale={tab.scale || 1.0}
+                      onPageCount={(count) => updateTab(tab.id, { totalPages: count })}
+                      onPageChange={(page) => updateTab(tab.id, { pageNumber: page })}
+                      onScaleChange={(s) => updateTab(tab.id, { scale: s })}
+                    />
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center h-full">
+                      <div className="bg-white shadow-2xl rounded-sm" style={{ width: '595px', height: '842px' }}>
+                        <div className="w-full h-full flex items-center justify-center text-gray-400">
+                          <div className="text-center">
+                            <div className="text-4xl mb-2">📄</div>
+                            <div className="text-sm">{tab.title}</div>
+                            <div className="text-xs mt-1 text-gray-300">PDF 渲染区域</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
+              )
+            })}
+          </div>
+
+          {/* 页码指示浮层（仅对活跃 tab 显示） */}
+          {activeTab?.filePath && activeTab && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-dark-800/90 backdrop-blur-sm border border-dark-500 rounded-full px-4 py-1.5 flex items-center gap-2 text-xs text-dark-200 shadow-lg z-10">
+              <button
+                onClick={() => {
+                  const cur = activeTab.pageNumber || 1
+                  if (cur > 1) updateTab(activeTab.id, { pageNumber: cur - 1 })
+                }}
+                className="hover:text-white transition-colors p-1"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <span className="select-none">
+                {activeTab.pageNumber || 1} / {activeTab.totalPages || '-'}
+              </span>
+              <button
+                onClick={() => {
+                  const cur = activeTab.pageNumber || 1
+                  const total = activeTab.totalPages || 1
+                  if (cur < total) updateTab(activeTab.id, { pageNumber: cur + 1 })
+                }}
+                className="hover:text-white transition-colors p-1"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
             </div>
           )}
-
-          {/* 页码指示浮层 */}
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-dark-800/90 backdrop-blur-sm border border-dark-500 rounded-full px-4 py-1.5 flex items-center gap-2 text-xs text-dark-200 shadow-lg z-10">
-            <button
-              onClick={() => {
-                const cur = activeTab.pageNumber || 1
-                if (cur > 1) updateTab(activeTab.id, { pageNumber: cur - 1 })
-              }}
-              className="hover:text-white transition-colors p-1"
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-            </button>
-            <span className="select-none">
-              {activeTab.pageNumber || 1} / {activeTab.totalPages || '-'}
-            </span>
-            <button
-              onClick={() => {
-                const cur = activeTab.pageNumber || 1
-                const total = activeTab.totalPages || 1
-                if (cur < total) updateTab(activeTab.id, { pageNumber: cur + 1 })
-              }}
-              className="hover:text-white transition-colors p-1"
-            >
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
         </div>
 
         {/* 翻译面板 */}
         <TranslatePanel />
       </div>
 
-      {/* 引用面板 - 放在最右侧，与左侧边栏对称 */}
+      {/* 引用面板 */}
       {citationPanelVisible && (
         <>
           <ResizeHandle onResize={(delta) => {}} side="right" />

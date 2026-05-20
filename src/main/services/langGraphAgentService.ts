@@ -5,7 +5,7 @@ import { getDatabase } from '../db'
 import { advancedRAGSearch } from './advancedRAGService'
 import path from 'path'
 import { StateGraph, MessagesAnnotation } from '@langchain/langgraph'
-import { ToolNode } from '@langchain/langgraph/prebuilt/index.js'
+import { ToolNode } from '@langchain/langgraph/prebuilt'
 import axios from 'axios'
 
 export interface AgentConfig {
@@ -75,10 +75,9 @@ function createTools(pdfId: string, config: AgentConfig) {
     async () => {
       const db = getDatabase()
       const allChunks = db.prepare(
-        `SELECT text FROM pdf_chunks WHERE pdf_id = ? ORDER BY chunk_no LIMIT 10`
+        `SELECT content FROM pdf_chunks WHERE pdf_id = ? ORDER BY chunk_index LIMIT 10`
       ).all(pdfId) as any[]
-      db.close()
-      return allChunks.map((c: any) => c.text).join('\n\n').substring(0, 4000)
+      return allChunks.map((c: any) => c.content).join('\n\n').substring(0, 4000)
     },
     {
       name: 'summarize_document',
@@ -91,11 +90,10 @@ function createTools(pdfId: string, config: AgentConfig) {
     async ({ pageNumber }) => {
       const db = getDatabase()
       const rows = db.prepare(
-        `SELECT text FROM pdf_chunks WHERE pdf_id = ? AND page_no = ? ORDER BY chunk_no`
+        `SELECT content FROM pdf_chunks WHERE pdf_id = ? AND page_number = ? ORDER BY chunk_index`
       ).all(pdfId, pageNumber) as any[]
-      db.close()
       if (!rows || rows.length === 0) return `Page ${pageNumber} is empty or not found.`
-      return rows.map((c: any) => c.text).join('\n').substring(0, 3000)
+      return rows.map((c: any) => c.content).join('\n').substring(0, 3000)
     },
     {
       name: 'get_page',
@@ -170,7 +168,6 @@ export async function runReActAgentWithHistoryLangGraph(
     const pdfInfo = db.prepare(
       'SELECT DISTINCT file_path FROM pdf_chunks WHERE pdf_id = ? LIMIT 1'
     ).get(pdfId) as { file_path: string } | undefined
-    db.close()
 
     const pdfFileName = pdfInfo?.file_path ? path.basename(pdfInfo.file_path) : '当前文档'
     const tools = createTools(pdfId, config)

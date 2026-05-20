@@ -894,6 +894,8 @@ const bitmapLRURef = useRef<number[]>([]) // 最近使用队列（末尾最新�
   useEffect(() => {
     if (!pdfDoc) return
     renderVersionRef.current += 1
+    // 清空已渲染版本记录，确保缩放后所有页面重新渲染（防止双倍递增导致取消）
+    lastRenderedVersionRef.current.clear()
     // 缩放变化时文本层需要重建
     textLayerBuiltRef.current.clear()
     // 取消并清理旧的 TextLayer 实例
