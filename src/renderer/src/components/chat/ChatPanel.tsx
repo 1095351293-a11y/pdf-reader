@@ -78,13 +78,14 @@ const SYSTEM_PROMPT_SUMMARY = `你是用户的学术助手，正在帮助用户�
 
 **重要规则**：
 1. 基于下面提供的【文档内容】进行全面总结
-2. 总结应包括：研究背景、主要方法、关键发现、结论
-3. 如果内容不足以全面总结，请说明局限性
+2. 如果提供了多个文档，请分别总结每个文档的主要内容，并说明它们之间的关系（如果有）
+3. 总结应包括：研究背景、主要方法、关键发现、结论
+4. 如果内容不足以全面总结，请说明局限性
 
 【文档内容】：
 {context}
 
-请全面总结这篇文档的主要内容。`
+请全面总结以上文档的主要内容。如果包含多个文档，请分别说明每个文档的核心内容。`
 
 /** 判断是否是追问（包含指代词） */
 function isFollowUp(query: string): boolean {
@@ -345,21 +346,29 @@ function normalizePath(path: string): string {
 async function getSummaryContext(filePaths: string[]): Promise<RAGContextResult> {
   const allContent: string[] = []
 
+  console.log(`[Summary] 开始处理 ${filePaths.length} 个文件的摘要:`, filePaths)
+
   for (const filePath of filePaths) {
     try {
       const pdfId = `pdf-${filePath}`
+      const fileName = filePath.split(/[\\/]/).pop() || '未知文件'
+      console.log(`[Summary] 处理文件: ${fileName}, pdfId: ${pdfId}`)
 
       // 检查索引状态
       if (window.api.rag.getIndexStatus) {
         const indexStatus = await window.api.rag.getIndexStatus(pdfId)
+        console.log(`[Summary] 文件 ${fileName} 索引状态:`, indexStatus)
         if (!indexStatus.hasIndex) {
-          console.warn(`[RAG] 文件 ${filePath} 尚未建立索引`)
+          console.warn(`[RAG] 文件 ${filePath} 尚未建立索引，跳过`)
+          allContent.push(`\n【文件: ${fileName}】\n⚠️ 该文件尚未建立索引，无法读取内容`)
           continue
         }
       }
 
       // 获取所有 chunks，按类型智能选择
       const result = await window.api.rag.getTopChunks?.(pdfId, 100) // 获取足够多的 chunks
+      console.log(`[Summary] 文件 ${fileName} getTopChunks 结果:`, result?.chunks?.length || 0, '个 chunks')
+
       if (result && result.chunks.length > 0) {
         // 调试：打印 type 分布
         const typeCounts = result.chunks.reduce((acc: any, c: any) => {
@@ -367,9 +376,7 @@ async function getSummaryContext(filePaths: string[]): Promise<RAGContextResult>
           return acc
         }, {})
         console.log('[Summary] Chunks type 分布:', typeCounts)
-        console.log('[Summary] 前5个 chunks 的 type:', result.chunks.slice(0, 5).map((c: any) => ({ type: c.type, content: c.content?.slice(0, 30) })))
 
-        const fileName = filePath.split(/[\\/]/).pop() || '未知文件'
         allContent.push(`\n【文件: ${fileName}】`)
 
         // 第一层：文档骨架（必取）- 标题和摘要
@@ -408,11 +415,18 @@ async function getSummaryContext(filePaths: string[]): Promise<RAGContextResult>
             allContent.push(`第 ${chunk.pageNumber} 页: ${chunk.content}`)
           })
         }
+      } else {
+        // 没有获取到 chunks
+        allContent.push(`\n【文件: ${fileName}】\n⚠️ 无法获取该文件的内容`)
       }
     } catch (err) {
       console.warn(`[RAG] 摘要模式失败 (${filePath}):`, err)
+      const fileName = filePath.split(/[\\/]/).pop() || '未知文件'
+      allContent.push(`\n【文件: ${fileName}】\n⚠️ 读取该文件时出错`)
     }
   }
+
+  console.log(`[Summary] 最终生成内容长度: ${allContent.length} 个片段`)
 
   if (allContent.length > 0) {
     return {
@@ -540,42 +554,26 @@ async function getRAGContext(
     return { context: null, mode: 'no_context' }
   }
 
-  const allChunks: { fileName: string; pageNumber: number; score: number; content: string }[] = []
+  // 使用新的多文档检索接口
+  const pdfIds = filesToSearch.map(filePath => `pdf-${filePath}`)
+  console.log(`[RAG] 使用多文档检索，文档数量: ${pdfIds.length}`)
 
-  // 对每个文件进行检索
-  for (const filePath of filesToSearch) {
-    try {
-      // 生成文件ID（使用标准化后的路径）
-      const pdfId = `pdf-${filePath}`
+  // 构建 Reranker 配置（如果选择了 Reranker 模型）
+  const rerankerConfig = rerankerModel ? {
+    model: rerankerModel.model,
+    apiKey: rerankerModel.apiKey,
+    baseUrl: rerankerModel.baseUrl,
+  } : undefined
 
-      console.log(`[RAG] 检索文件: ${filePath}, pdfId: ${pdfId}`)
+  let allChunks: { fileName: string; pageNumber: number; score: number; content: string; type?: string; section?: string }[] = []
 
-      // 先检查索引状态
-      if (window.api.rag.getIndexStatus) {
-        const indexStatus = await window.api.rag.getIndexStatus(pdfId)
-        console.log(`[RAG] 索引状态:`, indexStatus)
-        if (!indexStatus.hasIndex) {
-          console.warn(`[RAG] 文件 ${filePath} 尚未建立索引`)
-          continue
-        }
-      }
-
-      // 调试：执行 SQL 查询
-      if (window.api.rag.debug) {
-        const debugResult = await window.api.rag.debug(pdfId)
-        console.log('[RAG] SQL 查询结果:', debugResult)
-      }
-
-      // 构建 Reranker 配置（如果选择了 Reranker 模型）
-      const rerankerConfig = rerankerModel ? {
-        model: rerankerModel.model,
-        apiKey: rerankerModel.apiKey,
-        baseUrl: rerankerModel.baseUrl,
-      } : undefined
-
-      const result = await window.api.rag.search({
-        pdfId,
-        query: finalQuery, // 使用改写后的 query
+  try {
+    // 优先使用多文档检索接口
+    if (window.api.rag.searchMulti && pdfIds.length > 1) {
+      console.log('[RAG] 使用 searchMulti 接口')
+      const result = await window.api.rag.searchMulti({
+        pdfIds,
+        query: finalQuery,
         config: {
           provider: embeddingConfig.provider,
           baseUrl: embeddingConfig.baseUrl,
@@ -583,29 +581,117 @@ async function getRAGContext(
           model: embeddingConfig.model,
           embeddingModel: embeddingConfig.embeddingModel,
         },
-        topK: 3, // 每个文件检索前3个最相关的分块
-        rerankerConfig,
+        topK: 10, // 总共检索前10个最相关的分块
       })
 
-      console.log(`[RAG] 检索结果:`, result)
+      console.log(`[RAG] 多文档检索结果:`, result)
 
       if (result.success && result.chunks.length > 0) {
-        const fileName = filePath.split(/[\\/]/).pop() || '未知文件'
         result.chunks.forEach((chunk) => {
+          const filePath = filesToSearch.find(f => `pdf-${f}` === chunk.pdfId) || ''
+          const fileName = filePath.split(/[\\/]/).pop() || chunk.fileName || '未知文件'
           allChunks.push({
             fileName,
             pageNumber: chunk.pageNumber,
             score: chunk.score,
             content: chunk.content,
+            type: chunk.type,
+            section: chunk.section,
           })
         })
       } else if (!result.success) {
-        console.warn(`[RAG] 检索失败: ${result.message}`)
-      } else {
-        console.warn(`[RAG] 检索成功但没有匹配的分块`)
+        console.warn(`[RAG] 多文档检索失败: ${result.message}`)
       }
-    } catch (err) {
-      console.warn(`[RAG] 检索异常 (${filePath}):`, err)
+
+      // 如果有缺失的文档，回退到单文档检索
+      if (result.missingPdfIds && result.missingPdfIds.length > 0) {
+        console.warn(`[RAG] 以下文档未索引，尝试单文档检索: ${result.missingPdfIds.join(', ')}`)
+        // 继续执行下面的单文档检索逻辑
+        allChunks = []
+      }
+    }
+
+    // 如果多文档检索失败或只有一个文档，使用单文档检索
+    if (allChunks.length === 0) {
+      console.log('[RAG] 使用单文档检索')
+      for (const filePath of filesToSearch) {
+        try {
+          const pdfId = `pdf-${filePath}`
+          console.log(`[RAG] 检索文件: ${filePath}, pdfId: ${pdfId}`)
+
+          // 先检查索引状态
+          if (window.api.rag.getIndexStatus) {
+            const indexStatus = await window.api.rag.getIndexStatus(pdfId)
+            if (!indexStatus.hasIndex) {
+              console.warn(`[RAG] 文件 ${filePath} 尚未建立索引`)
+              continue
+            }
+          }
+
+          const result = await window.api.rag.search({
+            pdfId,
+            query: finalQuery,
+            config: {
+              provider: embeddingConfig.provider,
+              baseUrl: embeddingConfig.baseUrl,
+              apiKey: embeddingConfig.apiKey,
+              model: embeddingConfig.model,
+              embeddingModel: embeddingConfig.embeddingModel,
+            },
+            topK: 3,
+            rerankerConfig,
+          })
+
+          if (result.success && result.chunks.length > 0) {
+            const fileName = filePath.split(/[\\/]/).pop() || '未知文件'
+            result.chunks.forEach((chunk) => {
+              allChunks.push({
+                fileName,
+                pageNumber: chunk.pageNumber,
+                score: chunk.score,
+                content: chunk.content,
+              })
+            })
+          }
+        } catch (err) {
+          console.warn(`[RAG] 检索异常 (${filePath}):`, err)
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[RAG] 多文档检索异常，回退到单文档检索:', err)
+    // 回退到单文档检索
+    for (const filePath of filesToSearch) {
+      try {
+        const pdfId = `pdf-${filePath}`
+        const result = await window.api.rag.search({
+          pdfId,
+          query: finalQuery,
+          config: {
+            provider: embeddingConfig.provider,
+            baseUrl: embeddingConfig.baseUrl,
+            apiKey: embeddingConfig.apiKey,
+            model: embeddingConfig.model,
+            embeddingModel: embeddingConfig.embeddingModel,
+          },
+          topK: 3,
+          rerankerConfig,
+        })
+
+        if (result.success && result.chunks.length > 0) {
+          const fileName = filePath.split(/[\\/]/).pop() || '未知文件'
+          result.chunks.forEach((chunk) => {
+            allChunks.push({
+              fileName,
+              pageNumber: chunk.pageNumber,
+              score: chunk.score,
+              content: chunk.content,
+            })
+          })
+        }
+      } catch (err) {
+        console.warn(`[RAG] 检索异常 (${filePath}):`, err)
+      }
     }
   }
 
@@ -851,8 +937,7 @@ export default function ChatPanel({ width }: { width: number }): JSX.Element {
       if (att.type === 'selection') {
         textParts.push(`【选中文本】\n${att.data}`)
       } else if (att.type === 'screenshot') {
-        // 截图：将 dataUrl 作为图片发送给 AI（多模态）
-        textParts.push(`【截图：${att.label}】`)
+        // 截图：仅将图片传给 AI，不附加文字标签
         if (att.data.startsWith('data:image')) {
           imageParts.push({ type: 'image_url', image_url: { url: att.data } })
         }
@@ -915,24 +1000,57 @@ export default function ChatPanel({ width }: { width: number }): JSX.Element {
           console.log('[Chat] 使用 Agent 模式')
           const store = useAppStore.getState()
           const knowledgeBaseFiles = store.knowledgeBaseFiles
-          
+
           // 提取图片数据
           const imageUrls = imageParts.map(p => p.image_url.url)
           const queryText = typeof userContent === 'string' ? userContent : userContent.map(p => p.text || '').join(' ')
-          
+
           // 获取 embedding 模型配置
           const embeddingConfig = getEmbeddingConfig()
-          
+
           // 准备历史对话（不包含当前这条）
           const history = messages
             .slice(-6) // 取最近 3 轮对话
             .filter((m) => m.role === 'user' || m.role === 'assistant')
             .map((m) => ({ role: m.role, content: m.content }))
-          
-          // 处理多个文件的情况 - 目前只处理第一个文件
-          if (knowledgeBaseFiles.length > 0) {
+
+          // 处理多个文件的情况
+          if (knowledgeBaseFiles.length > 1 && window.api.rag.agentQueryMulti) {
+            // 多文档 Agent 模式
+            console.log('[Chat] 使用多文档 Agent 模式，文件数量:', knowledgeBaseFiles.length)
+            const pdfIds = knowledgeBaseFiles.map(f => `pdf-${normalizePath(f)}`)
+
+            const result = await window.api.rag.agentQueryMulti({
+              pdfIds,
+              query: queryText,
+              config: {
+                provider: activeConfig.provider,
+                baseUrl: activeConfig.baseUrl,
+                apiKey: activeConfig.apiKey,
+                model: activeConfig.model,
+                embeddingModel: embeddingConfig?.embeddingModel || embeddingConfig?.model,
+                webSearchApiKey: store.webSearchApiKey
+              },
+              history,
+              images: imageUrls.length > 0 ? imageUrls : undefined
+            })
+
+            if (result.steps) {
+              console.log('[Agent Multi] 工具调用步骤:', JSON.stringify(result.steps, null, 2))
+            }
+
+            if (activeChatSessionId) {
+              addMessageToSession(activeChatSessionId, {
+                id: `msg-${Date.now() + 1}`,
+                role: 'assistant',
+                content: result.success ? result.output! : `❌ ${result.message || 'Agent 执行失败'}`,
+                timestamp: Date.now(),
+              })
+            }
+          } else if (knowledgeBaseFiles.length > 0) {
+            // 单文档 Agent 模式（只有一个文件）
             const pdfId = `pdf-${normalizePath(knowledgeBaseFiles[0])}`
-            
+
             const result = await window.api.rag.agentQuery({
               pdfId,
               query: queryText,
@@ -947,7 +1065,7 @@ export default function ChatPanel({ width }: { width: number }): JSX.Element {
               history,
               images: imageUrls.length > 0 ? imageUrls : undefined
             })
-            
+
             if (activeChatSessionId) {
               addMessageToSession(activeChatSessionId, {
                 id: `msg-${Date.now() + 1}`,
@@ -959,7 +1077,7 @@ export default function ChatPanel({ width }: { width: number }): JSX.Element {
           } else if (currentPdfInfo) {
             // 如果没有选择知识库文件，使用当前打开的 PDF
             const pdfId = `pdf-${normalizePath(currentPdfInfo.filePath)}`
-            
+
             const result = await window.api.rag.agentQuery({
               pdfId,
               query: queryText,
@@ -974,7 +1092,7 @@ export default function ChatPanel({ width }: { width: number }): JSX.Element {
               history,
               images: imageUrls.length > 0 ? imageUrls : undefined
             })
-            
+
             if (activeChatSessionId) {
               addMessageToSession(activeChatSessionId, {
                 id: `msg-${Date.now() + 1}`,

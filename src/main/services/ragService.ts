@@ -3,9 +3,9 @@ import { getDatabase } from '../db'
 import * as path from 'path'
 import * as fs from 'fs'
 import { LayoutElement } from './layoutService'
-import { advancedRAGSearch } from './advancedRAGService'
+import { advancedRAGSearch, advancedRAGSearchMulti } from './advancedRAGService'
 import { createSemanticChunksFromElements, estimateTokens } from './parentChildChunkService'
-import { runReActAgentWithHistoryLangGraph } from './langGraphAgentService'
+import { runReActAgentWithHistoryLangGraph, runReActAgentMultiWithHistoryLangGraph } from './langGraphAgentService'
 
 // ========== 路径工具函数 ==========
 
@@ -340,6 +340,94 @@ export function registerRAGService(): void {
         }
       } catch (err: any) {
         console.error('[RAG] 检索失败:', err)
+        return { success: false, message: `检索失败: ${err.message || '未知错误'}`, chunks: [] }
+      }
+    }
+  )
+
+  // ========== 多文档检索：企业级 RAG 标准检索流水线 ==========
+  ipcMain.handle(
+    'rag:searchMulti',
+    async (
+      _,
+      params: {
+        pdfIds: string[]
+        query: string
+        config: { provider: string; baseUrl: string; apiKey: string; model: string; embeddingModel?: string }
+        topK?: number
+        rerankerConfig?: { model: string; apiKey: string; baseUrl: string }
+      }
+    ) => {
+      try {
+        const { pdfIds, query, config, topK = 5, rerankerConfig } = params
+
+        if (!pdfIds || pdfIds.length === 0) {
+          return { success: false, message: '未提供 PDF ID 列表', chunks: [] }
+        }
+
+        // 检查所有文档的索引状态
+        const placeholders = pdfIds.map(() => '?').join(',')
+        const indexStatus = db.prepare(
+          `SELECT pdf_id, COUNT(*) as total FROM pdf_chunks WHERE pdf_id IN (${placeholders}) GROUP BY pdf_id`
+        ).all(...pdfIds) as { pdf_id: string; total: number }[]
+
+        const indexedPdfIds = new Set(indexStatus.map(s => s.pdf_id))
+        const missingPdfIds = pdfIds.filter(id => !indexedPdfIds.has(id))
+
+        if (missingPdfIds.length > 0) {
+          console.warn(`[RAG] 以下 PDF 尚未建立索引: ${missingPdfIds.join(', ')}`)
+        }
+
+        if (indexStatus.length === 0) {
+          return { success: false, message: '所有 PDF 尚未建立索引，请先打开 PDF 等待自动索引', chunks: [] }
+        }
+
+        // 🚀 使用企业级多文档 RAG 检索流水线
+        console.log('[RAG] 使用企业级多文档 Advanced RAG 检索流水线')
+        console.log('[RAG] 检索文档:', indexedPdfIds)
+
+        const result = await advancedRAGSearchMulti(Array.from(indexedPdfIds), query, config, {
+          topK,
+          expandQueries: true,
+          enableCompression: true,
+          enableRerank: !!rerankerConfig,
+          vectorWeight: 0.9,
+          keywordWeight: 0.1,
+          rerankerConfig
+        })
+
+        // 转换为原有格式兼容
+        const chunks = result.chunks.map(chunk => ({
+          id: chunk.id,
+          pageNumber: chunk.pageNumber,
+          chunkIndex: chunk.chunkIndex,
+          content: chunk.content,
+          score: chunk.score,
+          section: chunk.section,
+          sectionLevel: 0,
+          type: chunk.type || 'paragraph',
+          keywords: [],
+          importance: 0.5,
+          tokens: 0,
+          prevId: null,
+          nextId: null,
+          parentId: null,
+          pdfId: chunk.pdfId,
+          fileName: chunk.fileName,
+        }))
+
+        console.log(`[RAG] 多文档 Advanced RAG 检索完成: 扩展查询 ${result.expandedQueries.length} 个, 最终召回 ${result.finalCount} 个 chunks`)
+
+        return {
+          success: true,
+          chunks,
+          expandedQueries: result.expandedQueries,
+          totalRetrieved: result.totalRetrieved,
+          finalCount: result.finalCount,
+          missingPdfIds: missingPdfIds.length > 0 ? missingPdfIds : undefined
+        }
+      } catch (err: any) {
+        console.error('[RAG] 多文档检索失败:', err)
         return { success: false, message: `检索失败: ${err.message || '未知错误'}`, chunks: [] }
       }
     }
@@ -684,8 +772,8 @@ export function registerRAGService(): void {
         console.log(`[ReAct Agent] 包含 ${images.length} 张图片`)
       }
       
-      const result = await runReActAgentWithHistoryLangGraph(query, pdfId, config, history)
-      
+      const result = await runReActAgentWithHistoryLangGraph(query, pdfId, config, history, images)
+
       if (result.success) {
         console.log('[ReAct Agent] 执行成功')
         return { success: true, output: result.output, steps: result.steps }
@@ -695,6 +783,41 @@ export function registerRAGService(): void {
       }
     } catch (err: any) {
       console.error('[ReAct Agent] 执行失败:', err)
+      return { success: false, message: `Agent 执行失败: ${err.message}` }
+    }
+  })
+
+  // ========== 多文档 Agent 系统 ==========
+  ipcMain.handle('rag:agent_query_multi', async (_, params: {
+    pdfIds: string[],
+    query: string,
+    config: { provider: string; baseUrl: string; apiKey: string; model: string; embeddingModel?: string; webSearchApiKey?: string },
+    history?: Array<{ role: 'user' | 'assistant'; content: string }>,
+    images?: string[]
+  }) => {
+    try {
+      const { pdfIds, query, config, history = [], images } = params
+      console.log('[ReAct Agent Multi] 开始执行，用户输入:', query)
+      console.log('[ReAct Agent Multi] 文档数量:', pdfIds.length)
+      if (images && images.length > 0) {
+        console.log(`[ReAct Agent Multi] 包含 ${images.length} 张图片`)
+      }
+
+      if (!pdfIds || pdfIds.length === 0) {
+        return { success: false, message: '未提供 PDF ID 列表' }
+      }
+
+      const result = await runReActAgentMultiWithHistoryLangGraph(query, pdfIds, config, history, images)
+
+      if (result.success) {
+        console.log('[ReAct Agent Multi] 执行成功')
+        return { success: true, output: result.output, steps: result.steps }
+      } else {
+        console.error('[ReAct Agent Multi] 执行失败:', result.error)
+        return { success: false, message: result.error }
+      }
+    } catch (err: any) {
+      console.error('[ReAct Agent Multi] 执行失败:', err)
       return { success: false, message: `Agent 执行失败: ${err.message}` }
     }
   })
